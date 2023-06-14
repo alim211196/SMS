@@ -1,11 +1,58 @@
 const express = require("express");
+const nodemailer = require("nodemailer");
 const router = new express.Router();
 const Students = require("../models/students");
 const User = require("../models/user");
 const Contact = require("../models/contact");
 const { courses } = require("../../student-courses");
 const Attendance = require("../models/attendance");
+const OTPModel = require("../models/otp_model");
 
+// Configure nodemailer transporter
+const transporter = nodemailer.createTransport({
+  service: "outlook",
+  auth: {
+    user: "Alim.Mohammad619@outlook.com",
+    pass: "Mc@2020!$",
+  },
+});
+
+const generateOTP = () => {
+  const digits = "0123456789";
+  let OTP = "";
+  for (let i = 0; i < 6; i++) {
+    OTP += digits[Math.floor(Math.random() * 10)];
+  }
+  return OTP;
+};
+
+const insertOTP = async (email, otp) => {
+   try {
+     const otpData = {
+       email,
+       otp: otp.toString(), // Convert the OTP to a string before saving
+     };
+     const savedOTP = await OTPModel.create(otpData);
+     return savedOTP;
+   } catch (error) {
+     console.error("Error saving OTP", error);
+     throw new Error("Failed to save OTP");
+   }
+};
+
+const verifyOTP = async (email, otp) => {
+  try {
+    const storedOTP = await OTPModel.findOne({ email });
+    if (storedOTP) {
+      return storedOTP.otp === otp;
+    } else {
+      throw new Error("OTP not found for the given email");
+    }
+  } catch (error) {
+    console.error("Error verifying OTP", error);
+    throw new Error("Failed to verify OTP");
+  }
+};
 //////////////////////////////student's api/////////////////////////////////
 
 //create student api
@@ -217,30 +264,61 @@ router.post("/user/login", async (req, res) => {
 router.post("/user/forgot-password", async (req, res) => {
   try {
     const email = req.body.email;
-    const userEmail = await User.findOne({ email: email });
-    const userId = userEmail._id;
+    const user = await User.findOne({ email });
+    const userId = user._id;
     const Id = userId.toString();
-    if (userEmail.email === email) {
-      res.status(201).send(Id);
+    if (user) {
+      // Generate and send OTP to user's email
+      const otp = generateOTP();
+      const mailOptions = {
+        from: "Alim.Mohammad619@outlook.com",
+        to: email,
+        subject: "Password Reset OTP",
+        text: `Your OTP for password reset is: ${otp}`,
+      };
+
+      // Send the email
+      transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+          console.error("Failed to send OTP", error);
+          res.status(500).send("Failed to send OTP");
+        } else {
+          // Insert OTP into the database
+          insertOTP(email, otp);
+          res.status(201).send(Id);
+        }
+      });
     } else {
-      res.status(404).send("User not found.");
+      res.status(404).send("User not found");
     }
   } catch (err) {
-    res.status(500).send("Internal server error.");
+    console.error("Internal server error", err);
+    res.status(500).send("Internal server error");
   }
 });
-
 //create reset password api
 router.patch("/user/reset-password/:id", async (req, res) => {
   try {
-    const _id = req.params.id;
-    const result = await User.findByIdAndUpdate(_id, req.body, {
-      new: true,
-    });
-    if (!result) {
-      res.status(404).send("User not found.");
+    const userId = req.params.id;
+    const user = await User.findById(userId);
+
+    if (user) {
+      const otp = req.body.otp;
+      const newPassword = req.body.new_password;
+
+      // Verify the received OTP
+      const isOTPValid = await verifyOTP(user.email, otp);
+
+      if (isOTPValid) {
+        // Update the user's password in the database
+        await User.updateOne({ _id: userId }, { password: newPassword });
+
+        res.status(200).send("Password reset successfully");
+      } else {
+        res.status(400).send("Invalid OTP");
+      }
     } else {
-      res.status(200).send("Password Updated Successfully.");
+      res.status(404).send("User not found");
     }
   } catch (err) {
     res.status(500).send("Internal server error.");
@@ -384,9 +462,6 @@ router.patch("/students/update-attendance/:id", async (req, res) => {
     res.status(500).send("Internal server error.");
   }
 });
-
-
-
 
 //delete attendance
 router.delete("/students/delete-attendance/:id", async (req, res) => {
